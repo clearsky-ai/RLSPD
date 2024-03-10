@@ -168,11 +168,11 @@ for (log_name, cut), order, algo, top, filtering, frequency, update, update_para
     heuristic_agent = HeuristicAgent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim)
     agent_test(env, heuristic_agent)
 
-    # td3_agent = TD3Agent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim, learning_rate=learning_rate, start_time=start_time,
-    #                         replay_buffer_size=replay_buffer_size, batch_size=batch_size, total_episodes=total_episodes)
-    # td3_agent.train()
-    # # td3_agent.load('model_dir/'+start_time+'/td3_agent_best_model.pth')
-    # agent_test(env, td3_agent)
+    td3_agent = TD3Agent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim, learning_rate=learning_rate, start_time=start_time,
+                            replay_buffer_size=replay_buffer_size, batch_size=batch_size, total_episodes=total_episodes)
+    td3_agent.train()
+    # td3_agent.load('model_dir/'+start_time+'/td3_agent_best_model.pth')
+    agent_test(env, td3_agent)
 
     # results={'evaluation':env.evaluations,'memory_size_list':env.memory_size_list,'sampling_rate_list':env.sampling_rate_list,'drift_flag':env.drift_flag}
     # with open("fixed_hyperparameters_results.pickle", "wb") as file:
