@@ -2,8 +2,10 @@ from collections import Counter, deque
 from os import path
 from time import process_time
 import random
+
 import numpy as np
 from anytree import Node
+
 from pm4py.algo.discovery.inductive import algorithm as inductive_miner
 from pm4py.algo.discovery.ilp import algorithm as ilp_miner
 from pm4py.algo.evaluation.precision import algorithm as precision_evaluator
@@ -19,71 +21,70 @@ class ProcessDiscoveryEnvironment:
     def __init__(self, log_name, cut, algo, order, top, filtering, frequency, update, update_param, memory_size, sampling_rate,
                  max_memory_size, min_memory_size, max_sampling_rate, min_sampling_rate, history_window, observation_window,
                  drift_punish, memory_size_punish, reward_value):
-        self.log_name = log_name  # 包含事件流的CSV文件的名称
-        self.cut = cut  # 进行初始化流程模型的轨迹数，一般为日志长度的10%
-        self.algo = algo  # 静态流程发现算法
-        self.order = order  # 轨迹变体排序标准
-        self.top = top  # 模型构建中要使用的轨迹变体数（Pareto分布为None）
-        self.filtering = filtering  # 指示流程发现算法是否使用filtering预处理的布尔值
-        self.frequency = frequency  # 指示输入流程发现的日志是否按频率包含相同trace的布尔值
-        self.update = update  # 是否进行动态流程发现
-        self.update_param = update_param  # 是否动态更新参数
+        self.log_name = log_name
+        self.cut = cut
+        self.algo = algo
+        self.order = order
+        self.top = top
+        self.filtering = filtering
+        self.frequency = frequency
+        self.update = update
+        self.update_param = update_param
+        self.history_window = history_window
 
-        self.history_window = history_window  # 指标变化检测窗口
-
-        self.memory_size = memory_size  # 遗忘窗口长度
+        self.memory_size = memory_size
         self.init_memory_size = memory_size
         self.max_memory_size = max_memory_size
         self.min_memory_size = min_memory_size
 
-        self.sampling_rate = sampling_rate  # 频率采样的阈值
+        self.sampling_rate = sampling_rate
         self.init_sampling_rate = sampling_rate
         self.max_sampling_rate = max_sampling_rate
         self.min_sampling_rate = min_sampling_rate
 
-        self.event_stream = None  # 日志对应的事件流
-        self.start_time = None  # 记录处理一条trace的时间
-        self.root = None  # root树保存了所有未完成case的活动路径，用树使节点可以共用节省内存
-        self.i = 0  # root树的节点编号
-        self.hashtable = {}  # 保存了未完成的case的尾节点
+        self.event_stream = None
+        self.start_time = None
+        self.root = None
+        self.i = 0
+        self.hashtable = {}
 
-        self.processed_traces = 0  # 日志流中已处理的trace数量
-        # 最近窗口内的trace ,+1避免当窗口为最大时取未来trace会遗忘掉第一条
+        self.processed_traces = 0
+
         self.trace_queue = deque(maxlen=self.max_memory_size + 1)
-        self.recent_variants = Counter()  # 最近窗口内的轨迹变体
+        self.recent_variants = Counter()
 
-        self.best_variants = None  # 当前最具代表性的轨迹
-        self.drift_moments = []  # 发生概念漂移的轨迹下标位置
-        self.drift_variants = []  # 每次概念漂移的轨迹变体集
-        self.models = []  # 每次概念漂移重新发现的模型
-        self.evaluations = []  # 评估指标
+        self.best_variants = None
+        self.drift_moments = []
+        self.drift_variants = []
+        self.models = []
+        self.evaluations = []
 
-        self.step_count = 0  # 动态更新参数的步数统计
+        self.step_count = 0
 
-        self.action_dim = 2  # 要动态更新的参数个数
+        self.action_dim = 2
         self.action_space = [[self.min_memory_size, self.max_memory_size],
                              [self.min_sampling_rate, self.max_sampling_rate]
                              ]
-        self.used_evaluation_type = 3  # 状态中使用的评估指标种类 有fitness、precision、F_value
+        self.used_evaluation_type = 3
         self.state_dim = self.history_window * \
-            (self.used_evaluation_type + self.action_dim)  # 窗口内每个时间步的指标和参数
+            (self.used_evaluation_type + self.action_dim)
 
         self.multi_reward = True
-        self.observation_window = observation_window  # 每次step要算未来n个指标的均值
+        self.observation_window = observation_window
         self.upcoming_traces = deque(
-            maxlen=self.observation_window)  # 未来用于评估的trace
-        self.step_observation_window = True  # 每次step走一个窗口的traces
+            maxlen=self.observation_window)
+        self.step_observation_window = True
 
-        self.reward_baseline = 0  # reward减去一个基准值
-        self.reward_value = reward_value  # reward是采用f值的绝对值还是相对值 'relative' / 'absolute'
-        self.reward_list = []  # 每步step的reward
+        self.reward_baseline = 0
+        self.reward_value = reward_value
+        self.reward_list = []
 
-        self.sampling_info = []  # 实际采样占比和轨迹变体数
+        self.sampling_info = []
         self.memory_size_list = []
         self.sampling_rate_list = []
         self.drift_flag = []
-        self.drift_punish = drift_punish  # 对变动参数导致发生漂移的惩罚
-        self.memory_size_punish = memory_size_punish  # 对遗忘窗口大小的惩罚，即考虑内存
+        self.drift_punish = drift_punish
+        self.memory_size_punish = memory_size_punish
         self.log_list = [
             ('BPIC2013Incidents', 800),
             # ('BPIC2020DomesticDeclarations', 1000),
