@@ -87,8 +87,10 @@ class CriticNetwork(nn.Module):
         if gru_type == 'full':
             shared_features = self.gru(state.reshape(len(state), -1, 5))[1][-1]
         elif gru_type == 'fusion':
-            f_out = self.gru_fmeasure(state[..., :3])[1][-1]
-            a_out = self.gru_action(state[..., 3:])[1][-1]
+            state = state.reshape(len(state), -1, 5)
+            f_out = self.gru_fmeasure(state[:, :, :3])[1][-1]
+            a_out = self.gru_action(state[:, :, 3:])[1][-1]
+
             shared_features = self.gru_linear_fusion(torch.cat([f_out, a_out], dim=1))
         else:
             shared_features = state
@@ -214,24 +216,6 @@ class TD3Agent(BaseAgent):
             
             print(f"TD3, Episode: {i_episode}, actor_loss: {episode_actor_loss[-1]: 4.3f}, critic_loss: {episode_critic_loss[-1]: 4.3f}, Total_Reward: {total_rewards[-1]: 4.3f}, Average_Reward: {average_rewards[-1]: 4.3f}, Final_Reward: {final_rewards[-1]: 4.3f}, episode_duration: {self.episode_durations[-1]}, optimize_count: {self.optimize_count}")
 
-            plt.figure()
-            plt.subplot(2, 2, 1)
-            plt.plot(action_1_list)
-            plt.title("action_1_list")
-            plt.subplot(2, 2, 2)
-            plt.plot(action_2_list)
-            plt.title("action_2_list")
-            plt.subplot(2, 2, 3)
-            plt.plot(memory_size_list)
-            plt.title("memory_size_list")
-            plt.subplot(2, 2, 4)
-            plt.plot(sampling_rate_list)
-            plt.title("sample_rate_list")
-            plt.tight_layout()
-            os.makedirs("agent_action/" + self.start_time, exist_ok=True)
-            plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_train_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,0].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,1].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,2].mean()) + ".png")
-            plt.close()
-
             test_f_measure, test_drift_count = self.agent_test()
             if test_f_measure > self.best_model[0]:
                 self.best_model[0] = test_f_measure
@@ -271,7 +255,7 @@ class TD3Agent(BaseAgent):
                 plt.tight_layout()
                 plt.savefig(os.path.join(model_dir, self.start_time, 'td3_performance_episode_'+ str(i_episode+1) +'.png'))
                 plt.close()
-        
+        os.makedirs(os.path.join(model_dir, self.start_time), exist_ok=True)
         torch.save(self.best_model[3], os.path.join(model_dir, self.start_time, 'td3_agent_best_model.pth'))
         print('save best model_episode_'+ str(self.best_model[2]),'f_measure:',self.best_model[0],'drift_count:',self.best_model[1])
 
@@ -295,7 +279,7 @@ class TD3Agent(BaseAgent):
         next_state_values_2 = torch.zeros_like(state_action_values_2, device=self.device)
         with torch.no_grad():
             next_action_batch = self.target_actor_network(non_final_next_states)
-            policy_noise = (torch.randn_like(next_action_batch) * self.policy_noise_std).clamp(-self.noise_clip, self.noise_clip) # randn_like为标准正态分布N(0,1)
+            policy_noise = (torch.randn_like(next_action_batch) * self.policy_noise_std).clamp(-self.noise_clip, self.noise_clip)
             smoothed_next_action_batch = (next_action_batch + policy_noise * ((self.action_range[:,1]-self.action_range[:,0]) * 0.5)).clamp(self.action_range[:,0], self.action_range[:,1])
             next_state_values_1[non_final_mask] = self.target_critic_network_1(non_final_next_states, smoothed_next_action_batch)
             next_state_values_2[non_final_mask] = self.target_critic_network_2(non_final_next_states, smoothed_next_action_batch)
@@ -333,7 +317,7 @@ class TD3Agent(BaseAgent):
             for param, target_param in zip(self.critic_network_2.parameters(), self.target_critic_network_2.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-    def test(self, total_episodes=5):
+    def test(self):
         self.actor_network.eval()
         self.critic_network_1.eval()
         self.critic_network_2.eval()
@@ -342,8 +326,6 @@ class TD3Agent(BaseAgent):
     
     def agent_test(self):
         self.actor_network.eval()
-        self.critic_network_1.eval()
-        self.critic_network_2.eval()
         self.env.multi_reward = False
         self.env.multi_log = False
         state, info = self.env.reset()
@@ -353,7 +335,6 @@ class TD3Agent(BaseAgent):
         while True:
             with torch.no_grad():
                 action = self.make_action(state)
-            # state, reward, done, info = self.env.step(action)
             state, reward, done, info = self.env.step(np.squeeze(self.scale_action(np.expand_dims(action,0),np.array(self.env.action_space)),0))
             action_1_list.append(action[0])
             action_2_list.append(action[1])
@@ -365,54 +346,8 @@ class TD3Agent(BaseAgent):
                 break
         self.env.multi_reward = True
         self.env.multi_log = True
-        plt.figure()
-        plt.subplot(2, 2, 1)
-        plt.plot(action_1_list)
-        plt.title("action_1_list")
-        plt.subplot(2, 2, 2)
-        plt.plot(action_2_list)
-        plt.title("action_2_list")
-        plt.subplot(2, 2, 3)
-        plt.plot(memory_size_list)
-        plt.title("memory_size_list")
-        plt.subplot(2, 2, 4)
-        plt.plot(sampling_rate_list)
-        plt.title("sample_rate_list")
-        plt.tight_layout()
-        os.makedirs("agent_action/" + self.start_time, exist_ok=True)
-        plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_test_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,0].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,1].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,2].mean()) + ".png")
-        plt.close()
-
-        plt.figure()
-        plt.subplot(5, 1, 1)
-        plt.plot(np.array(self.env.evaluations[1:])[:,0])
-        plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=0.5, ymax=1, linestyles='dashed', colors='red')
-        plt.title("Fitness")
-        plt.subplot(5, 1, 2)
-        plt.plot(np.array(self.env.evaluations[1:])[:,1])
-        plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=0.5, ymax=1, linestyles='dashed', colors='red')
-        plt.title("Precision")
-        plt.subplot(5, 1, 3)
-        plt.plot(np.array(self.env.evaluations[1:])[:,2])
-        plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=0.5, ymax=1, linestyles='dashed', colors='red')
-        plt.title("F_measure")
-        plt.subplot(5, 1, 4)
-        plt.plot(self.env.memory_size_list)
-        plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=250, ymax=500, linestyles='dashed', colors='red')
-        plt.title("Memory_size")
-        plt.subplot(5, 1, 5)
-        plt.plot(self.env.sampling_rate_list)
-        plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=0.5, ymax=1, linestyles='dashed', colors='red')
-        plt.title("Sampling_rate")
-        plt.tight_layout()
-        os.makedirs("agent_action/" + self.start_time, exist_ok=True)
-        plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_test_drift_visualization" + ".png")
-        plt.close()
-        
+      
         self.actor_network.train()
-        self.critic_network_1.train()
-        self.critic_network_2.train()
-
         return np.array(self.env.evaluations[1:])[:,2].mean(), len(self.env.drift_moments)-1
 
     def save(self, model_path):
