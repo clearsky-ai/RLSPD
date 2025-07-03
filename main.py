@@ -1,23 +1,22 @@
 import os
-import pickle
 import random
-from itertools import product
 import time
+import argparse
+from itertools import product
 
 import numpy as np
 import torch
+
 from heuristic_agent import HeuristicAgent
-from process_discovery_environment import ProcessDiscoveryEnvironment
 from td3_agent import TD3Agent, gru_type
-from utils import Order, Algo, drift_visualization, generate_csv, save_results, generate_summary
+from process_discovery_environment import ProcessDiscoveryEnvironment
+from utils import Order, Algo, drift_visualization, generate_summary, save_results
 
-seed = 42
 
-
-# fix random seed for reproducibility
 def fix_seed(seed):
-    os.environ['PYTHONHASHSEED'] =str(seed)
-    os.environ['CUBLAS_WORKSPACE_CONFIG']=':4096:8'
+    """Fix random seeds for reproducibility."""
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -25,158 +24,111 @@ def fix_seed(seed):
     random.seed(seed)
 
 
-def agent_test(env, agent):
+def agent_test(env, agent, log_name):
+    """Test agent on the environment and log results."""
     env.multi_reward = False
     env.multi_log = False
-    state, info = env.reset()
+    state, _ = env.reset()
     episode_reward = []
-    # one episode
+
     while True:
         with torch.no_grad():
             action = agent.make_action(state)
-        if type(agent).__name__ == 'HeuristicAgent':
-            state, reward, done, info = env.step(action)
+        if isinstance(agent, HeuristicAgent):
+            state, reward, done, _ = env.step(action)
         else:
-            state, reward, done, info = env.step(np.squeeze(agent.scale_action(np.expand_dims(action,0),np.array(env.action_space)),0))
-        episode_reward.append(reward) 
+            scaled_action = agent.scale_action(np.expand_dims(action, 0), np.array(env.action_space))
+            state, reward, done, _ = env.step(np.squeeze(scaled_action, 0))
+
+        episode_reward.append(reward)
         if done:
-            # print(sum(episode_reward)/len(episode_reward))
-            print("test log: ", env.log_name,np.array(env.evaluations[1:])[:,2].mean(), len(env.drift_moments)-1)
+            print("Test log:", env.log_name, np.array(env.evaluations[1:])[:, 2].mean(), len(env.drift_moments) - 1)
             drift_visualization(env=env, agent_name=type(agent).__name__)
             save_results(env=env, agent_name=type(agent).__name__)
             generate_summary(agent_name=type(agent).__name__, log_name=log_name)
             break
+
     env.multi_reward = True
     env.multi_log = True
 
-logs = [
-    ('BPIC2013Incidents', 800),
-    # ('BPIC2020DomesticDeclarations', 1000),
-    # ('BPIC2020InternationalDeclarations', 600),
-    # ('BPIC2020PermitLog', 700),
-    # ('BPIC2020PrepaidTravelCost', 200),
-    # ('BPIC2020RequestForPayment', 700),
-]
-memory_size_settings = [
-                        # 10,
-                        # 50, 
-                        # 100, 
-                        200, # default
-                        # 300,
-                        # 400,
-                        # 500,
-                        # 600,
-                        # 700,
-                        # 800,
-                        # 900,
-                        # 1000
-                        ]  # 遗忘窗口长度
-sampling_rate_settings = [
-                        # 0.1,
-                        # 0.2, 
-                        # 0.3,
-                        # 0.4, 
-                        # 0.5,
-                        # 0.6, 
-                        # 0.7,
-                        0.8, # default
-                        # 0.9,
-                        # 1.0
-                        ]  # 频率采样的阈值
-orders = [
-    Order.FRQ,
-    # Order.MAX,
-    # Order.MIN
-]  # 获得最具代表性轨迹的采样方式
-algos = [
-    Algo.IND,
-    # Algo.ILP
-]  # 静态流程发现方法
-top_settings = [None]  # 选择几个最具代表性的轨迹
-filtering_settings = [
-    True,
-    # False
-]  # 流程发现方法是否采样预处理过滤
-frequency_settings = [
-    True,
-    # False
-]  # 输入流程发现的日志是否有带频数的重复trace
-update_settings = [
-    True,
-    # False
-]  # 是否动态重启流程发现
-update_param_settings = [
-    True,
-    # False
-]  # 是否动态更新参数
 
-# env 可调超参数
-max_memory_size = 500 # default 500
-min_memory_size = 10
-max_sampling_rate = 1.0
-min_sampling_rate = 0.1
-history_window_settings = [
-    # 1,
-    # 5,
-    10, # default
-    # 20, 
-    # 40
-]  # 指标变化检测窗口
-observation_window_settings = [
-    # 1,
-    # 5,
-    10, # default
-    # 20,
-    # 50,
-    # 100
-] # 每次step要算未来n个指标的均值
-drift_punish = 1  # 对变动参数导致发生漂移的惩罚
-memory_size_punish = 0.001 # 对遗忘窗口大小的惩罚，即考虑内存
-reward_value = 'absolute' # reward是采用f值的绝对值还是相对值 'relative' / 'absolute' 
+def main(args):
+    fix_seed(args.seed)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f'Using {device} device')
 
-# agent 可调超参数
-learning_rate=1e-4  # 1e-3的reward曲线波动比较大
-replay_buffer_size = 1000000
-batch_size = 1024
-total_episodes = 200
-gru_type = gru_type # state的处理方式是直接输出gru还是分成f值序列和动作序列分别输入gru 'full' / 'fusion'
+    logs = [(args.log_name, args.log_cut)]
+    memory_sizes = [args.memory_size]
+    sampling_rates = [args.sampling_rate]
+    orders = [Order[args.order]]
+    algos = [Algo[args.algo]]
+    tops = [None]
+    filtering_settings = [args.filtering]
+    frequency_settings = [args.frequency]
+    update_settings = [args.update]
+    update_param_settings = [args.update_param]
+    history_windows = [args.history_window]
+    observation_windows = [args.observation_window]
+
+    for (log_name, cut), order, algo, top, filtering, frequency, update, update_param, memory_size, sampling_rate, history_window, observation_window in \
+        product(logs, orders, algos, tops, filtering_settings, frequency_settings, update_settings, update_param_settings, memory_sizes, sampling_rates, history_windows, observation_windows):
+
+        env = ProcessDiscoveryEnvironment(
+            log_name, cut, algo, order, top, filtering, frequency, update, update_param, memory_size, sampling_rate,
+            args.max_memory_size, args.min_memory_size, args.max_sampling_rate, args.min_sampling_rate,
+            history_window, observation_window, args.drift_punish, args.memory_size_punish, args.reward_value
+        )
+
+        print(f'log:{log_name}, algo:{algo.name}, order:{order.name}, memory_size:{memory_size}, sampling_rate:{sampling_rate}')
+
+        start_time = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime())
+        with open('experiment_record.txt', 'a+') as f:
+            f.write(f'start_time:{start_time},log:{log_name},algo:{algo.name},order:{order.name},top:{top},filtering:{filtering},frequency:{frequency},update:{update},update_param:{update_param}\n')
+            f.write(f'memory_size:{memory_size},sampling_rate:{sampling_rate},history_window:{history_window},observation_window:{observation_window}\n')
+            f.write(f'learning_rate:{args.learning_rate},batch_size:{args.batch_size},total_episodes:{args.total_episodes},gru_type:{args.gru_type}\n\n')
+
+        heuristic_agent = HeuristicAgent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim)
+        agent_test(env, heuristic_agent, log_name)
+
+        td3_agent = TD3Agent(
+            env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim, learning_rate=args.learning_rate,
+            start_time=start_time, replay_buffer_size=args.replay_buffer_size, batch_size=args.batch_size,
+            total_episodes=args.total_episodes
+        )
+        td3_agent.train(args.model_dir)
+        agent_test(env, td3_agent, log_name)
 
 
-fix_seed(seed)
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using {device} device')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log_name', type=str, default='BPIC2013Incidents')
+    parser.add_argument('--log_cut', type=int, default=800)
+    parser.add_argument('--memory_size', type=int, default=200)
+    parser.add_argument('--sampling_rate', type=float, default=0.8)
+    parser.add_argument('--order', type=str, choices=['FRQ', 'MAX', 'MIN'], default='FRQ')
+    parser.add_argument('--algo', type=str, choices=['IND', 'ILP'], default='IND')
+    parser.add_argument('--filtering', type=bool, default=True)
+    parser.add_argument('--frequency', type=bool, default=True)
+    parser.add_argument('--update', type=bool, default=True)
+    parser.add_argument('--update_param', type=bool, default=True)
+    parser.add_argument('--history_window', type=int, default=10)
+    parser.add_argument('--observation_window', type=int, default=10)
+    parser.add_argument('--drift_punish', type=float, default=1.0)
+    parser.add_argument('--memory_size_punish', type=float, default=0.001)
+    parser.add_argument('--reward_value', type=str, choices=['absolute', 'relative'], default='absolute')
 
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--replay_buffer_size', type=int, default=1_000_000)
+    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--total_episodes', type=int, default=200)
+    parser.add_argument('--gru_type', type=str, choices=['full', 'fusion'], default='full')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--model_dir', type=str, default='/home/waleed/DEMO/RLSPD_or/model_dir')
 
-for (log_name, cut), order, algo, top, filtering, frequency, update, update_param, memory_size, sampling_rate, history_window, observation_window in \
-        product(logs, orders, algos, top_settings, filtering_settings, frequency_settings, update_settings, update_param_settings, 
-                memory_size_settings, sampling_rate_settings, history_window_settings, observation_window_settings):
-    # generate_csv(log_name)
-    env = ProcessDiscoveryEnvironment(log_name, cut, algo, order, top, filtering, frequency, update, update_param, memory_size, sampling_rate, 
-                                    max_memory_size, min_memory_size, max_sampling_rate, min_sampling_rate, history_window, observation_window,
-                                    drift_punish, memory_size_punish, reward_value)
+    parser.add_argument('--max_memory_size', type=int, default=500)
+    parser.add_argument('--min_memory_size', type=int, default=10)
+    parser.add_argument('--max_sampling_rate', type=float, default=1.0)
+    parser.add_argument('--min_sampling_rate', type=float, default=0.1)
 
-    print(
-        f'log:{log_name},cut:{cut},algo:{algo.name},order:{order.name},top:{top},filtering:{filtering},frequency:{frequency},update:{update},update_param:{update_param},memory_size:{memory_size},sampling_rate:{sampling_rate},history_window:{history_window},observation_window:{observation_window}')
-    start_time=time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time())) 
-    with open('experiment_record.txt','a+') as file:
-        file.write(f'start_time:{start_time},log:{log_name},cut:{cut},algo:{algo.name},order:{order.name},top:{top},filtering:{filtering},frequency:{frequency},update:{update},update_param:{update_param}' +'\n' +
-                    f'init_memory_size:{memory_size},init_sampling_rate:{sampling_rate},max_memory_size:{max_memory_size},min_memory_size:{min_memory_size},max_sampling_rate:{max_sampling_rate},min_sampling_rate:{min_sampling_rate}' +'\n' +
-                    f'history_window:{history_window},observation_window:{observation_window},drift_punish:{drift_punish},memory_size_punish:{memory_size_punish},reward_value:{reward_value},multi_log_count:{len(env.log_list)}'+'\n' +
-                    f'learning_rate:{learning_rate},replay_buffer_size:{replay_buffer_size},batch_size:{batch_size},total_episodes:{total_episodes},gru_type:{gru_type}'+'\n\n'
-                    )
-
-    heuristic_agent = HeuristicAgent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim)
-    agent_test(env, heuristic_agent)
-
-    td3_agent = TD3Agent(env=env, device=device, state_dim=env.state_dim, action_dim=env.action_dim, learning_rate=learning_rate, start_time=start_time,
-                            replay_buffer_size=replay_buffer_size, batch_size=batch_size, total_episodes=total_episodes)
-    td3_agent.train()
-    # td3_agent.load('model_dir/'+start_time+'/td3_agent_best_model.pth')
-    agent_test(env, td3_agent)
-
-    # results={'evaluation':env.evaluations,'memory_size_list':env.memory_size_list,'sampling_rate_list':env.sampling_rate_list,'drift_flag':env.drift_flag}
-    # with open("fixed_hyperparameters_results.pickle", "wb") as file:
-    #     pickle.dump(results, file)
-
-    # 命令行中用如下命令执行进行耗时分析
-    # pyinstrument --outfile=time_profile.html -r html main.py
+    args = parser.parse_args()
+    main(args)

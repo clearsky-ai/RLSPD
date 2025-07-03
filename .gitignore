@@ -5,3 +5,9 @@ model_dir
 agent_action
 time_profile.html
 experiment_record.txt
+rlspd_env
+outputs
+eventlog
+environment.yml
+README.md
+.gitignore

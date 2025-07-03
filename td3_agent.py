@@ -9,175 +9,144 @@ from torch import nn, optim
 import os
 from base_agent import BaseAgent
 
-gru_type = 'fusion' # state的处理方式是直接输出gru还是分成f值序列和动作序列分别输入gru 'full' / 'fusion'
+# GRU processing type: 'fusion' combines F-measure and action features, 'full' uses raw GRU output
+gru_type = 'fusion'
 
-# 强化学习的四元组
+# Transition tuple for experience replay
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
-
-# DQN的经验存储区
-class ReplayMemory(object):
-
+# Experience Replay Buffer
+class ReplayMemory:
     def __init__(self, capacity):
         self.memory = deque([], maxlen=capacity)
 
     def push(self, state, action, next_state, reward):
-        """Save a transition"""
         self.memory.append(Transition(state, action, next_state, reward))
 
-    # 从经验池中随机采样
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
 
-# actor的行动网络，根据state返回采取各个action的值
+# Actor Network: maps state to action
 class ActorNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, action_range):
-        super(ActorNetwork, self).__init__()
+        super().__init__()
         self.action_range = action_range
         self.hidden_size = 128
 
-        self.gru=nn.GRU(input_size=5, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
-        # 拆成动作序列和f值序列
-        self.gru_fmeasure = nn.GRU(input_size=3, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
-        self.gru_action = nn.GRU(input_size=2, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
+        self.gru = nn.GRU(5, self.hidden_size, batch_first=True)
+        self.gru_fmeasure = nn.GRU(3, self.hidden_size, batch_first=True)
+        self.gru_action = nn.GRU(2, self.hidden_size, batch_first=True)
+
         self.gru_linear_fusion = nn.Sequential(
             nn.Linear(self.hidden_size * 2, self.hidden_size),
-            nn.LeakyReLU() # 加这层激活，学习曲线更平滑些
+            nn.LeakyReLU()
         )
 
         self.linear_active_stack = nn.Sequential(
-            # nn.Linear(state_dim, self.hidden_size),
-            # nn.LeakyReLU(),
-            # nn.Linear(self.hidden_size, self.hidden_size),
-            # nn.LeakyReLU(),
             nn.Linear(self.hidden_size, action_dim),
-            nn.Tanh()  # 放缩到(-1,1)
+            nn.Tanh()  # Output in (-1, 1)
         )
-        # 使用He初始化对参数进行初始化
-        # for module in self.linear_active_stack.modules():
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.kaiming_uniform_(module.weight, mode='fan_in', nonlinearity='leaky_relu')
-        #         nn.init.zeros_(module.bias)
-    
+
     def forward(self, state):
         if gru_type == 'full':
-            shared_features = self.gru(state.reshape(len(state),-1,5))[1][-1,:,:]
+            shared_features = self.gru(state.reshape(len(state), -1, 5))[1][-1]
         elif gru_type == 'fusion':
-            shared_features = self.gru_linear_fusion(
-                torch.cat(
-                    [
-                    # self.gru(state.reshape(len(state),-1,5))[1][-1,:,:],
-                    self.gru_fmeasure(state.reshape(len(state),-1,5)[:,:,0:3])[1][-1,:,:],
-                    self.gru_action(state.reshape(len(state),-1,5)[:,:,3:5])[1][-1,:,:]]
-                    ,1))
+            state = state.reshape(len(state), -1, 5)
+            f_out = self.gru_fmeasure(state[:, :, :3])[1][-1]
+            a_out = self.gru_action(state[:, :, 3:])[1][-1]
+            shared_features = self.gru_linear_fusion(torch.cat([f_out, a_out], dim=1))
         else:
             shared_features = state
-        action = self.linear_active_stack(shared_features)
-        return action
+        return self.linear_active_stack(shared_features)
 
-# critic的Q值估计网络，根据state返回采取action的Q值
+# Critic Network: estimates Q-value for (state, action) pairs
 class CriticNetwork(nn.Module):
     def __init__(self, state_dim, action_dim):
-        super(CriticNetwork, self).__init__()
+        super().__init__()
         self.hidden_size = 128
 
-        self.gru=nn.GRU(input_size=5, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
-        # 拆成动作序列和f值序列
-        self.gru_fmeasure = nn.GRU(input_size=3, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
-        self.gru_action = nn.GRU(input_size=2, hidden_size=self.hidden_size, num_layers=1, batch_first=True)
+        self.gru = nn.GRU(5, self.hidden_size, batch_first=True)
+        self.gru_fmeasure = nn.GRU(3, self.hidden_size, batch_first=True)
+        self.gru_action = nn.GRU(2, self.hidden_size, batch_first=True)
+
         self.gru_linear_fusion = nn.Sequential(
             nn.Linear(self.hidden_size * 2, self.hidden_size),
-            nn.LeakyReLU() # 加这层激活，学习曲线更平滑些
+            nn.LeakyReLU()
         )
 
         self.linear_active_stack = nn.Sequential(
-            # nn.Linear(state_dim + action_dim, self.hidden_size),
-            # nn.LeakyReLU(),
-            # nn.Linear(self.hidden_size, self.hidden_size),
             nn.Linear(self.hidden_size + action_dim, self.hidden_size),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_size, 1)
         )
-        # 使用He初始化对参数进行初始化
-        # for module in self.linear_active_stack.modules():
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.kaiming_uniform_(module.weight, mode='fan_in', nonlinearity='leaky_relu')
-        #         nn.init.zeros_(module.bias)
 
     def forward(self, state, action):
         if gru_type == 'full':
-            shared_features = self.gru(state.reshape(len(state),-1,5))[1][-1,:,:]
+            shared_features = self.gru(state.reshape(len(state), -1, 5))[1][-1]
         elif gru_type == 'fusion':
-            shared_features = self.gru_linear_fusion(
-                torch.cat(
-                    [
-                    # self.gru(state.reshape(len(state),-1,5))[1][-1,:,:],
-                    self.gru_fmeasure(state.reshape(len(state),-1,5)[:,:,0:3])[1][-1,:,:],
-                    self.gru_action(state.reshape(len(state),-1,5)[:,:,3:5])[1][-1,:,:]]
-                    ,1))
+            f_out = self.gru_fmeasure(state[..., :3])[1][-1]
+            a_out = self.gru_action(state[..., 3:])[1][-1]
+            shared_features = self.gru_linear_fusion(torch.cat([f_out, a_out], dim=1))
         else:
             shared_features = state
 
-        q_value = self.linear_active_stack(torch.cat([shared_features,action],1))
-        return q_value
+        return self.linear_active_stack(torch.cat([shared_features, action], dim=1))
 
-
+# TD3 Agent definition
 class TD3Agent(BaseAgent):
     def __init__(self, state_dim, action_dim, learning_rate, env, device, start_time,
-                replay_buffer_size, batch_size, total_episodes):
-        super(TD3Agent, self).__init__(env, device, state_dim, action_dim)
+                 replay_buffer_size, batch_size, total_episodes):
+        super().__init__(env, device, state_dim, action_dim)
 
-        # self.action_range = torch.tensor(np.column_stack((self.env.action_space.low, self.env.action_space.high)),
-        #                                 device=self.device, requires_grad=False)
-        self.action_range = torch.tensor([[-1,1],[-1,1]], device=self.device, requires_grad=False)
-        self.env_action_range = torch.tensor(self.env.action_space, device=self.device, requires_grad=False)
+        # Action range setup (normalized to [-1, 1])
+        self.action_range = torch.tensor([[-1, 1], [-1, 1]], device=device)
+        self.env_action_range = torch.tensor(env.action_space, device=device)
 
-        self.actor_network = ActorNetwork(self.state_dim, self.action_dim, self.action_range).to(self.device)
-        self.target_actor_network = ActorNetwork(self.state_dim, self.action_dim, self.action_range).to(self.device)
-        self.target_actor_network.load_state_dict(self.actor_network.state_dict())
+        # Initialize actor and critic networks and their targets
+        self.actor_network = ActorNetwork(state_dim, action_dim, self.action_range).to(device)
+        self.target_actor_network = copy.deepcopy(self.actor_network)
         self.actor_optimizer = optim.AdamW(self.actor_network.parameters(), lr=learning_rate, amsgrad=True)
 
-        self.critic_network_1 = CriticNetwork(self.state_dim, self.action_dim).to(self.device)
-        self.target_critic_network_1 = CriticNetwork(self.state_dim, self.action_dim).to(self.device)
-        self.target_critic_network_1.load_state_dict(self.critic_network_1.state_dict())
+        self.critic_network_1 = CriticNetwork(state_dim, action_dim).to(device)
+        self.target_critic_network_1 = copy.deepcopy(self.critic_network_1)
         self.critic_optimizer_1 = optim.AdamW(self.critic_network_1.parameters(), lr=learning_rate, amsgrad=True)
 
-        self.critic_network_2 = CriticNetwork(self.state_dim, self.action_dim).to(self.device)
-        self.target_critic_network_2 = CriticNetwork(self.state_dim, self.action_dim).to(self.device)
-        self.target_critic_network_2.load_state_dict(self.critic_network_2.state_dict())
+        self.critic_network_2 = CriticNetwork(state_dim, action_dim).to(device)
+        self.target_critic_network_2 = copy.deepcopy(self.critic_network_2)
         self.critic_optimizer_2 = optim.AdamW(self.critic_network_2.parameters(), lr=learning_rate, amsgrad=True)
 
-        self.replay_memory = ReplayMemory(replay_buffer_size) # 太大的话会学到旧的policy产生的数据
-        self.batch_size = batch_size  # 每次从ReplayMemory中采样的transition数量
-        self.gamma = 0.99  # 累计回报的折扣系数
-        self.tau = 0.005  # target_network的更新率
-
-        self.episode_durations = []  # 每个episode的持续步数
-        self.total_episodes = total_episodes  # 总共玩的游戏场数
-        self.max_step = 10000  # 每个episode最多玩n步就结束，并执行梯度更新
-
+        # Replay buffer and training parameters
+        self.replay_memory = ReplayMemory(replay_buffer_size)
+        self.batch_size = batch_size
+        self.gamma = 0.99  # Discount factor
+        self.tau = 0.005   # Target network update rate
+        self.total_episodes = total_episodes
+        self.max_step = 10000
         self.start_time = start_time
 
+        # Noise settings for exploration and policy smoothing
         self.exploration_noise_std = 0.1
-        self.policy_noise_std = 0.2 # TODO:衰减
+        self.policy_noise_std = 0.2
         self.noise_clip = 0.4
+
         self.optimize_count = 0
         self.delay_update_frequency = 5
 
-        self.static_episode = 0
-        self.random_episode = 0
+        # Best model tracking: [f_measure, drift_count, episode, model_dict]
+        self.best_model = [0, 1000, 0, None]
 
-        self.best_model = [0,1000,0,None] # [f_measure,drift_count,episode,model]用于保存最好模型
+        # Metrics
+        self.episode_durations = []
 
-    # 使用actor_network选择动作
+    # actor_network feedforward
     def make_action(self, state):
         action = self.actor_network(torch.tensor(state, dtype = torch.float32, device=self.device).unsqueeze(0))
         return action.squeeze(0).cpu().numpy()
 
-    # 使用actor_network选择动作，并加上噪声进行探索
+    # actor_network sampling and selection
     def sample_action(self, state):
         raw_action = self.actor_network(state)
         noise = torch.randn(self.action_dim, device=self.device)
@@ -185,17 +154,17 @@ class TD3Agent(BaseAgent):
         action = (raw_action + exploration_noise).clamp(self.action_range[:,0], self.action_range[:,1])
         return action
     
-    # action按照取值范围放缩
+    # action scale
     def scale_action(self, action, action_range):
         action_scaled = action_range[:, 0] + (action + 1) * 0.5 * (action_range[:, 1] - action_range[:, 0])
         return action_scaled
 
     
-    def train(self):
-        self.actor_network.train()  # 训练前，先确保 network 处在 training 模式
-        self.critic_network_1.train()  # 训练前，先确保 network 处在 training 模式
-        self.critic_network_2.train()  # 训练前，先确保 network 处在 training 模式
-        total_rewards,average_rewards, final_rewards = [], [], []  # 每个episode的总reward、平均reward、结束时的reward
+    def train(self, model_dir):
+        self.actor_network.train()
+        self.critic_network_1.train()
+        self.critic_network_2.train()
+        total_rewards,average_rewards, final_rewards = [], [], []  
         episode_actor_loss,episode_critic_loss=[],[]
         episode_f_measure, episode_drift_count = [], []
 
@@ -204,13 +173,13 @@ class TD3Agent(BaseAgent):
             total_reward = 0
             state, info = self.env.reset()
             state = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(
-                0)  # .unsqueeze(0)作用是升维，将此数据视为一个整体而给予的一个索引，方便后续对数据的批处理。
+                0)  
             self.current_episode_actor_loss = []
             self.current_episode_critic_loss = []
             action_1_list, action_2_list = [], []
             memory_size_list, sampling_rate_list = [], []
             for t in tqdm(range(self.max_step)):
-                with torch.no_grad():  # 收集的数据并不马上用于更新网络，故不保留梯度
+                with torch.no_grad():
                     action = self.sample_action(state)
                 observation, reward, done, info = self.env.step(self.scale_action(action, self.env_action_range).squeeze(0).cpu().numpy())
                 total_reward += reward
@@ -225,13 +194,10 @@ class TD3Agent(BaseAgent):
                 else:
                     next_state = torch.tensor(observation, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-                # 将transition存入经验区
                 self.replay_memory.push(state, action, next_state, reward)
 
-                # 移动到下一个state
                 state = next_state
 
-                # 进行一次模型优化
                 self.optimize_model()
 
                 # if terminated or truncated:
@@ -261,7 +227,7 @@ class TD3Agent(BaseAgent):
             plt.subplot(2, 2, 4)
             plt.plot(sampling_rate_list)
             plt.title("sample_rate_list")
-            plt.tight_layout() # 解决标题重叠问题
+            plt.tight_layout()
             os.makedirs("agent_action/" + self.start_time, exist_ok=True)
             plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_train_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,0].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,1].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,2].mean()) + ".png")
             plt.close()
@@ -281,8 +247,8 @@ class TD3Agent(BaseAgent):
                                     }
 
             if (i_episode+1)%50 == 0:
-                os.makedirs("model_dir/" + self.start_time, exist_ok=True)
-                self.save('model_dir/' + self.start_time + '/td3_agent_model_episode_'+ str(i_episode+1) +'.pth')
+                os.makedirs(os.path.join(model_dir, self.start_time), exist_ok=True)
+                self.save(os.path.join(model_dir, self.start_time, 'td3_agent_model_episode_'+ str(i_episode+1) +'.pth'))
                 plt.figure()
                 plt.subplot(2, 3, 1)
                 plt.plot(total_rewards)
@@ -302,11 +268,11 @@ class TD3Agent(BaseAgent):
                 plt.subplot(2, 3, 6)
                 plt.plot(episode_drift_count)
                 plt.title("drift_count")
-                plt.tight_layout() # 解决标题重叠问题
-                plt.savefig('model_dir/' + self.start_time + '/td3_performance_episode_'+ str(i_episode+1) +'.png')
+                plt.tight_layout()
+                plt.savefig(os.path.join(model_dir, self.start_time, 'td3_performance_episode_'+ str(i_episode+1) +'.png'))
                 plt.close()
         
-        torch.save(self.best_model[3], 'model_dir/' + self.start_time + '/td3_agent_best_model.pth')
+        torch.save(self.best_model[3], os.path.join(model_dir, self.start_time, 'td3_agent_best_model.pth'))
         print('save best model_episode_'+ str(self.best_model[2]),'f_measure:',self.best_model[0],'drift_count:',self.best_model[1])
 
     def optimize_model(self):
@@ -314,34 +280,26 @@ class TD3Agent(BaseAgent):
             return
         self.optimize_count += 1
         transitions = self.replay_memory.sample(self.batch_size)
-        # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for detailed explanation).
-        # This converts batch-array of Transitions to Transition of batch-arrays.
         batch = Transition(*zip(*transitions))
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
 
-        # 获取非结束状态
         non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=self.device, dtype=torch.bool)
 
-        # critic_network计算当前状态st采取行动at的Q值即Q(s_t, a_t)
-        #TODO：网络给出的action和实际采样占比有差距，导致action略微改变不会使reward改变，从而无法学习
         state_action_values_1 = self.critic_network_1(state_batch, action_batch)
         state_action_values_2 = self.critic_network_2(state_batch, action_batch)
         
-        # target_network计算状态st+1采取行动at+1的Q值即Q(s_t+1, a_t+1),终止状态的值为0
         next_state_values_1 = torch.zeros_like(state_action_values_1, device=self.device)
         next_state_values_2 = torch.zeros_like(state_action_values_2, device=self.device)
         with torch.no_grad():
-            # 在target action上添加噪声
             next_action_batch = self.target_actor_network(non_final_next_states)
             policy_noise = (torch.randn_like(next_action_batch) * self.policy_noise_std).clamp(-self.noise_clip, self.noise_clip) # randn_like为标准正态分布N(0,1)
             smoothed_next_action_batch = (next_action_batch + policy_noise * ((self.action_range[:,1]-self.action_range[:,0]) * 0.5)).clamp(self.action_range[:,0], self.action_range[:,1])
             next_state_values_1[non_final_mask] = self.target_critic_network_1(non_final_next_states, smoothed_next_action_batch)
             next_state_values_2[non_final_mask] = self.target_critic_network_2(non_final_next_states, smoothed_next_action_batch)
 
-            # 计算状态st期待的Q值即r_t+γ*Q(s_t+1, a_t+1)
             target_value = torch.min(next_state_values_1,next_state_values_2)
             expected_state_action_values = target_value * self.gamma + reward_batch.unsqueeze(1)
 
@@ -366,7 +324,6 @@ class TD3Agent(BaseAgent):
             actor_loss.backward()
             self.actor_optimizer.step()
 
-            # 平滑更新target network：θ′ ← τ θ + (1 −τ )θ′
             for param, target_param in zip(self.actor_network.parameters(), self.target_actor_network.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -376,8 +333,6 @@ class TD3Agent(BaseAgent):
             for param, target_param in zip(self.critic_network_2.parameters(), self.target_critic_network_2.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-
-    # 在环境中测试agent的表现
     def test(self, total_episodes=5):
         self.actor_network.eval()
         self.critic_network_1.eval()
@@ -395,7 +350,6 @@ class TD3Agent(BaseAgent):
         episode_reward = []
         action_1_list, action_2_list = [], []
         memory_size_list, sampling_rate_list = [], []
-        # 进行一场游戏
         while True:
             with torch.no_grad():
                 action = self.make_action(state)
@@ -424,7 +378,7 @@ class TD3Agent(BaseAgent):
         plt.subplot(2, 2, 4)
         plt.plot(sampling_rate_list)
         plt.title("sample_rate_list")
-        plt.tight_layout() # 解决标题重叠问题
+        plt.tight_layout()
         os.makedirs("agent_action/" + self.start_time, exist_ok=True)
         plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_test_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,0].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,1].mean()) + "_" + '%.3f'%(np.array(self.env.evaluations[1:])[:,2].mean()) + ".png")
         plt.close()
@@ -450,15 +404,14 @@ class TD3Agent(BaseAgent):
         plt.plot(self.env.sampling_rate_list)
         plt.vlines(x= np.where(np.array(self.env.drift_flag)==1), ymin=0.5, ymax=1, linestyles='dashed', colors='red')
         plt.title("Sampling_rate")
-        plt.tight_layout() # 解决标题重叠问题
+        plt.tight_layout()
         os.makedirs("agent_action/" + self.start_time, exist_ok=True)
         plt.savefig("agent_action/" + self.start_time + "/td3_episode_" + str(len(self.episode_durations)-1) + "_test_drift_visualization" + ".png")
         plt.close()
         
-        # 避免后续还需训练
-        self.actor_network.train()  # 训练前，先确保 network 处在 training 模式
-        self.critic_network_1.train()  # 训练前，先确保 network 处在 training 模式
-        self.critic_network_2.train()  # 训练前，先确保 network 处在 training 模式
+        self.actor_network.train()
+        self.critic_network_1.train()
+        self.critic_network_2.train()
 
         return np.array(self.env.evaluations[1:])[:,2].mean(), len(self.env.drift_moments)-1
 

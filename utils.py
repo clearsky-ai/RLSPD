@@ -4,7 +4,7 @@ from enum import Enum
 from os import path, makedirs, listdir
 from matplotlib import pyplot as plt
 import numpy as np
-
+ 
 from pandas import DataFrame, read_csv
 from pm4py import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
